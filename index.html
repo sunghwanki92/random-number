@@ -291,16 +291,6 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 .dmode-btn:hover { border-color: var(--accent); color: var(--text); }
 .dmode-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-/* 표시 모드 버튼 */
-.dmode-btn {
-  font-family: var(--mono); font-size: 12px;
-  padding: 6px 14px; border-radius: 6px;
-  border: 1px solid var(--border); background: var(--surface2);
-  color: var(--muted); cursor: pointer; transition: all 0.15s;
-}
-.dmode-btn:hover { border-color: var(--accent); color: var(--text); }
-.dmode-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-
 /* +/- 버튼 */
 .pm-wrap { display: flex; align-items: center; gap: 4px; }
 .pm-btn {
@@ -313,16 +303,6 @@ input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.2); }
 }
 .pm-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
 .pm-btn:active { transform: scale(0.93); }
-
-/* 표시 모드 버튼 */
-.dmode-btn {
-  font-family: var(--mono); font-size: 12px;
-  border: 1px solid var(--border); background: var(--surface2);
-  color: var(--muted); padding: 6px 14px; border-radius: 6px;
-  cursor: pointer; transition: all 0.15s;
-}
-.dmode-btn:hover { border-color: var(--accent); color: var(--text); }
-.dmode-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
 /* 모바일 반응형 */
 @media (max-width: 480px) {
@@ -602,7 +582,7 @@ footer { margin-top: 48px; font-size: 11px; color: var(--muted); text-align: cen
           <div style="display:flex;gap:5px;flex-wrap:wrap;" id="coldBalls"></div>
         </div>
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:10px;font-family:var(--mono);">※ 1~1161회 기준 통계 (로또 당첨 확률은 모든 번호 동일)</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:10px;font-family:var(--mono);">※ <span id="lottoStatsRef">최근 통계 기준</span> (로또 당첨 확률은 모든 번호 동일)</div>
     </div>
   </div>
 
@@ -802,6 +782,15 @@ function adjustCols(delta) {
 
 let numbers = [];
 
+function parseSharedNums(encoded) {
+  if(!encoded) return [];
+  try {
+    return encoded.split('_').map(v => Number(v)).filter(v => Number.isFinite(v));
+  } catch {
+    return [];
+  }
+}
+
 (function(){
   const p = new URLSearchParams(location.search);
   if(p.get('min'))  document.getElementById('minVal').value = p.get('min');
@@ -809,6 +798,10 @@ let numbers = [];
   if(p.get('dec'))  { decEl.value=p.get('dec');  decNum.value=p.get('dec'); }
   if(p.get('cnt'))  { cntEl.value=p.get('cnt');  cntNum.value=p.get('cnt'); }
   if(p.get('cols')) colsEl.value=p.get('cols');
+  if(p.get('dmode')) setDisplayMode(p.get('dmode'));
+  if(p.get('base')) document.getElementById('baseVal').value = p.get('base');
+  const sharedNums = parseSharedNums(p.get('rnums'));
+  if(sharedNums.length){ numbers = sharedNums; document.getElementById('resultPanel').classList.add('show'); renderGrid(); }
 
   // 복권 공유 링크 복원
   if(p.get('tab') === 'lotto') {
@@ -902,9 +895,15 @@ function copyCol() {
 function downloadExcel() {
   if(!numbers.length){ showToast('먼저 생성하기를 눌러주세요.'); return; }
   const cols=clamp(+colsEl.value,1,20);
+  const dec = clamp(+decNum.value,0,6);
+  const base = getBaseVal();
   const header=Array.from({length:cols},(_,i)=>`열${i+1}`);
   const dataRows=[header];
-  for(let i=0;i<numbers.length;i+=cols){ const row=numbers.slice(i,i+cols); while(row.length<cols)row.push(''); dataRows.push(row); }
+  const toVal = n => {
+    if(base === null || displayMode === 'diff') return n.toFixed(dec);
+    return parseFloat((base+n).toFixed(dec)).toFixed(dec);
+  };
+  for(let i=0;i<numbers.length;i+=cols){ const row=numbers.slice(i,i+cols).map(toVal); while(row.length<cols)row.push(''); dataRows.push(row); }
   const ws=XLSX.utils.aoa_to_sheet(dataRows);
   ws['!cols']=Array.from({length:cols},()=>({wch:12}));
   const infoRows=[['항목','값'],['최솟값',document.getElementById('minVal').value],['최댓값',document.getElementById('maxVal').value],['소수점',decNum.value+'자리'],['개수',numbers.length+'개'],['생성일시',new Date().toLocaleString('ko-KR')]];
@@ -918,7 +917,10 @@ function downloadExcel() {
   setHint('✓ 엑셀 파일 저장됨','ok');
 }
 function shareUrl() {
-  const params=new URLSearchParams({ min:document.getElementById('minVal').value, max:document.getElementById('maxVal').value, dec:decNum.value, cnt:cntNum.value, cols:colsEl.value });
+  const params=new URLSearchParams({ min:document.getElementById('minVal').value, max:document.getElementById('maxVal').value, dec:decNum.value, cnt:cntNum.value, cols:colsEl.value, dmode: displayMode });
+  const base = document.getElementById('baseVal').value.trim();
+  if(base !== '') params.set('base', base);
+  if(numbers.length) params.set('rnums', numbers.join('_'));
   copyText(location.origin+location.pathname+'?'+params.toString(), ()=> showToast('✓ 공유 링크 복사됨!'));
 }
 function setHint(msg,cls){ const h=document.getElementById('hint'); h.textContent=msg; h.className='hint '+cls; }
@@ -927,7 +929,9 @@ function setHint(msg,cls){ const h=document.getElementById('hint'); h.textConten
 // 역대 자주 나온 번호 (1~1161회 기준 상위 15개)
 const HOT  = [34,43,45,1,27,2,17,14,42,35,7,40,3,16,37];
 // 적게 나온 번호 (하위 15개)
-const COLD = [22,9,36,19,49,10,26,39,44,21,25,33,38,13,20].filter(n=>n<=45);
+const COLD = [22,9,36,19,10,26,39,44,21,25,33,38,13,20,41];
+const LOTTO_STATS_VERSION = '1~1161회';
+
 
 let lottoMode = 'hot';
 let lottoNums = [];
@@ -1152,6 +1156,8 @@ function renderFreqBalls() {
 renderFreqBalls();
 buildFixedGrid();
 renderSaved();
+const refEl = document.getElementById('lottoStatsRef');
+if(refEl) refEl.textContent = `${LOTTO_STATS_VERSION} · 업데이트 ${new Date().toISOString().slice(0,10)}`;
 
 // 데모 숫자 애니메이션
 const demoVals=[-0.001,0.002,-0.001,0.001,-0.002,0.000,0.001,-0.001,0.002];
