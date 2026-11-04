@@ -750,7 +750,7 @@ const cntEl  = document.getElementById('cnt');
 const decNum = document.getElementById('decNum');
 const cntNum = document.getElementById('cntNum');
 const colsEl = document.getElementById('cols');
-function clamp(v,a,b){ return isNaN(v)?a:Math.min(b,Math.max(a,v|0)); }
+function clamp(v,a,b){ return !Number.isFinite(v)?a:Math.min(b,Math.max(a,Math.trunc(v))); }
 
 decEl.oninput  = () => { decNum.value = decEl.value; };
 decNum.oninput = () => { let v=clamp(+decNum.value,0,6);   decNum.value=v; decEl.value=v; };
@@ -761,6 +761,7 @@ colsEl.oninput = renderGrid;
 let displayMode = 'diff';
 
 function setDisplayMode(m) {
+  if(!['diff','final','both'].includes(m))m='diff';
   displayMode = m;
   ['diff','final','both'].forEach(k => document.getElementById('dmode-'+k).classList.toggle('active', k===m));
   if(numbers.length) renderGrid();
@@ -768,7 +769,7 @@ function setDisplayMode(m) {
 function onBaseChange() { if(numbers.length) renderGrid(); }
 function getBaseVal() {
   const v = parseFloat(document.getElementById('baseVal').value);
-  return isNaN(v) ? null : v;
+  return Number.isFinite(v) ? v : null;
 }
 function formatCell(diff, dec) {
   const base = getBaseVal();
@@ -784,7 +785,7 @@ function formatCell(diff, dec) {
 function adjustVal(inputId, slider, delta, min, max) {
   const inp = document.getElementById(inputId);
   let v = clamp((+inp.value || 0) + delta, min, max);
-  inp.value = v; slider.value = v;
+  inp.value = v; slider.value = v; invalidateNumbers();
 }
 function adjustCols(delta) {
   colsEl.value = clamp((+colsEl.value || 1) + delta, 1, 20);
@@ -793,68 +794,44 @@ function adjustCols(delta) {
 
 let numbers = [];
 
-function parseSharedNums(encoded) {
-  if(!encoded) return [];
-  try {
-    return encoded.split('_').map(v => Number(v)).filter(v => Number.isFinite(v));
-  } catch {
-    return [];
-  }
+// Convert decimal bounds exactly before rounding to the chosen precision.
+function scaledBound(raw, dec, roundUp) {
+  const m=String(raw).trim().match(/^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i);
+  if(!m||!(m[2]||m[3])||String(raw).length>128)throw new Error('숫자 범위를 확인해주세요.');
+  const exponent=Number(m[4]||0),digits=(m[2]||'')+(m[3]||'');
+  if(!Number.isFinite(Number(raw))||Math.abs(exponent)>308)throw new Error('유한한 숫자를 입력해주세요.');
+  let n=BigInt(digits||'0')*(m[1]==='-'?-1n:1n),shift=dec+exponent-(m[3]||'').length;
+  if(shift>=0)return n*10n**BigInt(shift);
+  const den=10n**BigInt(-shift),q=n/den,r=n%den;
+  return q+(r===0n?0n:roundUp?(n>0n?1n:0n):(n<0n?-1n:0n));
 }
-
-(function(){
-  const p = new URLSearchParams(location.search);
-  if(p.get('min'))  document.getElementById('minVal').value = p.get('min');
-  if(p.get('max'))  document.getElementById('maxVal').value = p.get('max');
-  if(p.get('dec'))  { decEl.value=p.get('dec');  decNum.value=p.get('dec'); }
-  if(p.get('cnt'))  { cntEl.value=p.get('cnt');  cntNum.value=p.get('cnt'); }
-  if(p.get('cols')) colsEl.value=p.get('cols');
-  if(p.get('dmode')) setDisplayMode(p.get('dmode'));
-  if(p.get('base')) document.getElementById('baseVal').value = p.get('base');
-  const sharedNums = parseSharedNums(p.get('rnums'));
-  if(sharedNums.length){ numbers = sharedNums; document.getElementById('resultPanel').classList.add('show'); renderGrid(); }
-
-  // 복권 공유 링크 복원
-  if(p.get('tab') === 'lotto') {
-    switchTab('lotto');
-    if(p.get('mode')) { lottoMode = p.get('mode'); setMode(p.get('mode')); }
-    if(p.get('nums')) {
-      try {
-        lottoNums = p.get('nums').split('_').map(row => row.split('-').map(Number));
-        // 번호 렌더링 (generateLotto 내부 렌더 재사용)
-        setTimeout(() => {
-          const container = document.getElementById('lottoRows');
-          container.innerHTML = '';
-          lottoNums.forEach((nums, i) => {
-            const row = document.createElement('div');
-            row.className = 'lotto-row';
-            row.innerHTML = `<div class="lotto-row-num">${String.fromCharCode(65+i)}</div><div class="balls">${nums.map(n=>`<div class="ball ${ballColor(n)}">${n}</div>`).join('')}</div>`;
-            row.onclick = () => copyText(nums.join(', '), ()=>{
-              row.classList.add('flash');
-              setTimeout(()=>row.classList.remove('flash'),600);
-              document.getElementById('lottoHint').textContent = `✓ ${String.fromCharCode(65+i)}줄 복사됨: ${nums.join(', ')}`;
-            });
-            container.appendChild(row);
-          });
-          document.getElementById('lottoResult').classList.add('show');
-          document.getElementById('lottoHint').textContent = '공유받은 번호입니다 · 줄 클릭 → 복사';
-        }, 50);
-      } catch(e) {}
-    }
-  }
-})();
+function numberGrid(minRaw,maxRaw,dec){
+  const min=Number(minRaw),max=Number(maxRaw);
+  if(!String(minRaw).trim()||!String(maxRaw).trim()||!Number.isFinite(min)||!Number.isFinite(max)||min>=max)throw new Error('최솟값이 최댓값보다 작아야 합니다. 유한한 숫자를 입력해주세요.');
+  const low=scaledBound(minRaw,dec,true),high=scaledBound(maxRaw,dec,false),limit=BigInt(Number.MAX_SAFE_INTEGER);
+  if(low>high)throw new Error('이 범위에서 소수 '+dec+'자리로 표시할 수 있는 값이 없습니다. 소수 자릿수를 늘려주세요.');
+  if(low < -limit||high>limit||high-low+1n>limit)throw new Error('숫자 범위가 너무 큽니다. 범위나 소수 자릿수를 줄여주세요.');
+  return {low:Number(low),high:Number(high),scale:10**dec,min,max};
+}
+function parseSharedNums(encoded) {
+  if(!encoded||encoded.length>12000)return [];
+  try{
+    const values=encoded.split('_').map(v=>v.trim()===''?NaN:Number(v));
+    const dec=clamp(+decNum.value,0,6),g=numberGrid(document.getElementById('minVal').value,document.getElementById('maxVal').value,dec);
+    if(values.length>200||values.some(v=>!Number.isFinite(v)||v<g.min||v>g.max||Number(v.toFixed(dec))!==v))return [];
+    return values;
+  }catch(e){return [];}
+}
 
 function generate() {
-  const min = parseFloat(document.getElementById('minVal').value);
-  const max = parseFloat(document.getElementById('maxVal').value);
-  const dec = clamp(+decNum.value,0,6);
-  const cnt = clamp(+cntNum.value,1,200);
-  if(isNaN(min)||isNaN(max)||min>=max){ showToast('⚠ 최솟값이 최댓값보다 작아야 합니다.'); return; }
-  numbers = Array.from({length:cnt}, ()=> parseFloat((Math.random()*(max-min)+min).toFixed(dec)));
-  document.getElementById('resultPanel').classList.add('show');
-  renderGrid();
-  setHint('셀 클릭 → 개별 복사  |  표 복사 → 엑셀 Ctrl+V', '');
+  const dec=clamp(+decNum.value,0,6),cnt=clamp(+cntNum.value,1,200);
+  let g;try{g=numberGrid(document.getElementById('minVal').value,document.getElementById('maxVal').value,dec);}catch(e){invalidateNumbers();showToast(e.message);setHint(e.message,'');return;}
+  numbers=Array.from({length:cnt},()=>Number(((g.low+Math.floor(Math.random()*(g.high-g.low+1)))/g.scale).toFixed(dec)));
+  decEl.value=decNum.value=dec;cntEl.value=cntNum.value=cnt;
+  document.getElementById('resultPanel').classList.add('show');renderGrid();
+  setHint('범위 안에서 소수 '+dec+'자리로 표현 가능한 값을 생성했습니다 · 중복 허용','');
 }
+function invalidateNumbers(){numbers=[];document.getElementById('grid').replaceChildren();document.getElementById('resultPanel').classList.remove('show');}
 function renderGrid() {
   const cols = clamp(+colsEl.value,1,20);
   const dec  = clamp(+decNum.value,0,6);
@@ -994,6 +971,7 @@ function clearFixed() {
 }
 
 function setMode(m) {
+  if(!['hot','cold','pure'].includes(m))m='pure';
   lottoMode = m;
   ['hot','cold','pure'].forEach(k => document.getElementById('mode-'+k).classList.toggle('active', k===m));
 }
@@ -1006,6 +984,7 @@ function ballColor(n) {
   return 'r5';
 }
 
+function shuffle(values){const a=[...values];for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
 function pickLottoNums(mode) {
   const fixed = [...fixedNums];
   const need = 6 - fixed.length; // 고정 제외하고 채울 개수
@@ -1013,24 +992,24 @@ function pickLottoNums(mode) {
   let pool;
 
   if(mode === 'hot') {
-    const hotAvail = HOT.filter(n => !exclude.has(n)).sort(()=>Math.random()-0.5);
-    const restAvail = Array.from({length:45},(_,i)=>i+1).filter(n=>!exclude.has(n)&&!HOT.includes(n)).sort(()=>Math.random()-0.5);
+    const hotAvail = shuffle(HOT.filter(n => !exclude.has(n)));
+    const restAvail = shuffle(Array.from({length:45},(_,i)=>i+1).filter(n=>!exclude.has(n)&&!HOT.includes(n)));
     const hotPick = Math.min(Math.round(need * 0.67), hotAvail.length); // 약 2/3를 HOT에서
     pool = [...hotAvail.slice(0, hotPick), ...restAvail].slice(0, need);
   } else if(mode === 'cold') {
-    const coldAvail = COLD.filter(n => !exclude.has(n)).sort(()=>Math.random()-0.5);
-    const restAvail = Array.from({length:45},(_,i)=>i+1).filter(n=>!exclude.has(n)&&!COLD.includes(n)).sort(()=>Math.random()-0.5);
+    const coldAvail = shuffle(COLD.filter(n => !exclude.has(n)));
+    const restAvail = shuffle(Array.from({length:45},(_,i)=>i+1).filter(n=>!exclude.has(n)&&!COLD.includes(n)));
     const coldPick = Math.min(Math.round(need * 0.67), coldAvail.length);
     pool = [...coldAvail.slice(0, coldPick), ...restAvail].slice(0, need);
   } else {
-    const all = Array.from({length:45},(_,i)=>i+1).filter(n=>!exclude.has(n)).sort(()=>Math.random()-0.5);
+    const all = shuffle(Array.from({length:45},(_,i)=>i+1).filter(n=>!exclude.has(n)));
     pool = all.slice(0, need);
   }
   return [...fixed, ...pool].sort((a,b)=>a-b);
 }
 
 function generateLotto() {
-  const cnt = parseInt(document.getElementById('lottoCnt').value);
+  const cnt = clamp(Number(document.getElementById('lottoCnt').value),1,20);
   lottoNums = Array.from({length:cnt}, ()=> pickLottoNums(lottoMode));
   const container = document.getElementById('lottoRows');
   container.innerHTML = '';
@@ -1168,7 +1147,7 @@ renderFreqBalls();
 buildFixedGrid();
 renderSaved();
 const refEl = document.getElementById('lottoStatsRef');
-if(refEl) refEl.textContent = `${LOTTO_STATS_VERSION} · 업데이트 ${new Date().toISOString().slice(0,10)}`;
+if(refEl) refEl.textContent = `${LOTTO_STATS_VERSION} 고정 참고자료 · 자동 갱신 안 됨 · 당첨 확률 향상 보장 없음`;
 
 // 데모 숫자 애니메이션
 const demoVals=[-0.001,0.002,-0.001,0.001,-0.002,0.000,0.001,-0.001,0.002];
@@ -1178,6 +1157,52 @@ function renderDemoNums(){
   el.innerHTML='';
   demoVals.forEach((v,i)=>{ const d=document.createElement('div'); d.className='demo-num '+(v<0?'n':'p'); d.textContent=v.toFixed(3); d.style.animationDelay=(i*0.08)+'s'; el.appendChild(d); });
 }
+function restoreSharedURL(){
+  const p = new URLSearchParams(location.search);
+  if(p.get('min'))  document.getElementById('minVal').value = p.get('min');
+  if(p.get('max'))  document.getElementById('maxVal').value = p.get('max');
+  if(p.get('dec'))  { decEl.value=decNum.value=clamp(Number(p.get('dec')),0,6); }
+  if(p.get('cnt'))  { cntEl.value=cntNum.value=clamp(Number(p.get('cnt')),1,200); }
+  if(p.get('cols')) colsEl.value=clamp(Number(p.get('cols')),1,20);
+  if(p.get('dmode')) setDisplayMode(p.get('dmode'));
+  if(p.get('base')) document.getElementById('baseVal').value = p.get('base');
+  const sharedNums = parseSharedNums(p.get('rnums'));
+  if(sharedNums.length){ numbers = sharedNums; document.getElementById('resultPanel').classList.add('show'); renderGrid(); }
+
+  // 복권 공유 링크 복원
+  if(p.get('tab') === 'lotto') {
+    switchTab('lotto');
+    if(p.get('mode')) { lottoMode = p.get('mode'); setMode(p.get('mode')); }
+    if(p.get('nums')) {
+      try {
+        const candidate=p.get('nums').split('_').map(row=>row.split('-').map(Number));
+        if(candidate.length>20||candidate.some(row=>row.length!==6||new Set(row).size!==6||row.some(n=>!Number.isInteger(n)||n<1||n>45)))throw new Error('invalid');
+        lottoNums=candidate;
+        // 번호 렌더링 (generateLotto 내부 렌더 재사용)
+        setTimeout(() => {
+          const container = document.getElementById('lottoRows');
+          container.innerHTML = '';
+          lottoNums.forEach((nums, i) => {
+            const row = document.createElement('div');
+            row.className = 'lotto-row';
+            row.innerHTML = `<div class="lotto-row-num">${String.fromCharCode(65+i)}</div><div class="balls">${nums.map(n=>`<div class="ball ${ballColor(n)}">${n}</div>`).join('')}</div>`;
+            row.onclick = () => copyText(nums.join(', '), ()=>{
+              row.classList.add('flash');
+              setTimeout(()=>row.classList.remove('flash'),600);
+              document.getElementById('lottoHint').textContent = `✓ ${String.fromCharCode(65+i)}줄 복사됨: ${nums.join(', ')}`;
+            });
+            container.appendChild(row);
+          });
+          document.getElementById('lottoResult').classList.add('show');
+          document.getElementById('lottoHint').textContent = '공유받은 번호입니다 · 줄 클릭 → 복사';
+        }, 50);
+      } catch(e) {}
+    }
+  }
+}
+
+restoreSharedURL();
+['minVal','maxVal','dec','decNum','cnt','cntNum'].forEach(id=>document.getElementById(id).addEventListener('input',invalidateNumbers));
 renderDemoNums();
 setInterval(renderDemoNums, 3000);
 

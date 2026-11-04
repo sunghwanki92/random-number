@@ -1,0 +1,11 @@
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const source=fs.readFileSync(require('node:path').join(__dirname,'../index.html'),'utf8');
+const grid=source.slice(source.indexOf('function scaledBound('),source.indexOf('function parseSharedNums('));
+const lotto=source.slice(source.indexOf('function shuffle('),source.indexOf('function generateLotto('));
+const ctx=vm.createContext({});vm.runInContext(grid+"\nconst HOT=[34,43,45,1,27,2,17,14,42,35,7,40,3,16,37];const COLD=[22,9,36,19,10,26,39,44,21,25,33,38,13,20,41];let fixedNums=new Set();\n"+lotto,ctx);
+const call=expr=>vm.runInContext(expr,ctx);
+test('original out-of-range reproduction is rejected',()=>assert.throws(()=>call("numberGrid('1.11','1.12',1)"),/표시할 수 있는 값/));
+test('decimal boundaries do not lose 0.29 or negative endpoints',()=>{for(const [a,b,d,lo,hi] of [['0.29','0.30',2,29,30],['-0.30','-0.29',2,-30,-29],['-0.002','0.002',3,-2,2],['1.11','1.12',2,111,112],['1e-3','2e-3',3,1,2]]){const g=call(`numberGrid('${a}','${b}',${d})`);assert.equal(g.low,lo);assert.equal(g.high,hi);}});
+test('invalid, empty, infinite, reversed and unsafe ranges reject',()=>{for(const expr of ["numberGrid('','1',2)","numberGrid('Infinity','2',2)","numberGrid('2','1',2)","numberGrid('1','1',2)","numberGrid('1e25','2e25',6)"])assert.throws(()=>call(expr));});
+test('all representable grid points stay inside requested range',()=>{for(const [a,b,d]of [[-1.199,-.111,2],[1.101,1.299,1],[-.002,.002,3],[.29,.3,2]]){const g=call(`numberGrid('${a}','${b}',${d})`);for(let n=g.low;n<=g.high;n++){const value=Number((n/g.scale).toFixed(d));assert.ok(value>=a&&value<=b);}}});
+test('lotto modes preserve five fixed values, uniqueness and 1..45',()=>{call('fixedNums=new Set([1,2,3,4,45])');for(const mode of ['pure','hot','cold'])for(let i=0;i<100;i++){const row=call(`pickLottoNums('${mode}')`);assert.equal(row.length,6);assert.equal(new Set(row).size,6);for(const n of [1,2,3,4,45])assert.ok(row.includes(n));assert.ok(row.every(n=>n>=1&&n<=45));}});
